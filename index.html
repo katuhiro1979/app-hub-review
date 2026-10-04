@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>アプリ管理（復習）</title>
+<style>
+  /* 色は変数にまとめ、ダークモードでは変数だけ差し替える */
+  :root {
+    --bg: #f4f6fb; --card: #ffffff; --text: #1c2030; --muted: #6b7285; --line: #e2e6f0;
+    --accent: #5b6cff; --danger: #e5484d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12141c; --card: #1c1f2b; --text: #eceef6; --muted: #98a0b8; --line: #2c3040; --accent: #8593ff; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.6;
+    font-family: system-ui, "Yu Gothic UI", "Hiragino Sans", sans-serif;
+    padding: 16px max(16px, env(safe-area-inset-right)) 40px max(16px, env(safe-area-inset-left));
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 8px 0 16px; }
+  h2 { font-size: 14px; color: var(--muted); letter-spacing: .08em; margin: 24px 0 8px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+  input {
+    width: 100%; font-size: 16px; /* 16px未満だとiPhoneで入力時に拡大される */
+    padding: 10px 12px; margin: 4px 0; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg); color: var(--text);
+  }
+  input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button {
+    font-size: 15px; padding: 9px 16px; margin: 6px 6px 0 0; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--card); color: var(--text); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { color: var(--danger); }
+  .hidden { display: none; }
+  .msg { color: var(--danger); min-height: 1.5em; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .top span { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+  ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+  li { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; min-width: 0; }
+  li a, li .nolink { font-weight: 700; font-size: 17px; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+  li .nolink { color: var(--text); }
+  .desc { color: var(--muted); font-size: 14px; }
+  .host { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .actions { margin-top: 6px; }
+  .actions button { font-size: 13px; padding: 5px 12px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+<h1>アプリ管理（復習）</h1>
+
+<!-- ログイン画面 -->
+<section id="loginView" class="panel">
+  <input id="email" type="email" placeholder="メールアドレス" autocomplete="username">
+  <input id="password" type="password" placeholder="パスワード（6文字以上）" autocomplete="current-password">
+  <button id="loginBtn" class="primary">ログイン</button>
+  <button id="signupBtn">新規登録</button>
+</section>
+
+<!-- ログイン後の画面 -->
+<section id="mainView" class="hidden">
+  <div class="top"><span id="userLabel"></span><button id="logoutBtn">ログアウト</button></div>
+
+  <h2 id="formTitle">アプリを追加</h2>
+  <form id="addForm" class="panel">
+    <input id="appName" placeholder="アプリ名（例：出勤簿）" required maxlength="40">
+    <input id="appUrl" type="url" inputmode="url" placeholder="URL（例：https://example.github.io/app/）">
+    <input id="appDesc" placeholder="説明（任意）" maxlength="80">
+    <button type="submit" id="submitBtn" class="primary">追加する</button>
+    <button type="button" id="cancelEditBtn" class="hidden">編集をやめる</button>
+  </form>
+
+  <h2>MY APPS</h2>
+  <ul id="appList"></ul>
+  <p id="empty" class="hidden desc">まだアプリが登録されていません。</p>
+</section>
+
+<p id="msg" class="msg" role="status"></p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ★手順2：Supabase の Project Settings > API にある値を、次の2か所に貼り付ける
+const SUPABASE_URL = 'https://kcadsiwjxlmhzremgzet.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjYWRzaXdqeGxtaHpyZW1nemV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4ODgzNzAsImV4cCI6MjEwNTQ2NDM3MH0.ZOm5zNFazsLKFl8N-oLhBeUxZcYscPNdOpYPOwq8d9M'; // 公開用キー。service_role キーは絶対に貼らない
+const TABLE = 'review_apps';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const $ = (id) => document.getElementById(id);
+const show = (text) => { $('msg').textContent = text || ''; };
+const hostOf = (u) => { try { return new URL(u).host; } catch { return u; } };
+
+let editingId = null; // 編集中の行のid。null なら「追加」モード
+
+// フォームを「追加」「編集」のどちらかの状態にする
+function setFormMode(app) {
+  editingId = app ? app.id : null;
+  $('formTitle').textContent = app ? 'アプリを編集' : 'アプリを追加';
+  $('submitBtn').textContent = app ? '保存する' : '追加する';
+  $('cancelEditBtn').classList.toggle('hidden', !app);
+  $('addForm').reset();
+  if (app) {
+    $('appName').value = app.name;
+    $('appUrl').value = app.url || '';
+    $('appDesc').value = app.description || '';
+    $('appName').focus();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+// 一覧を読み込んで表示する（RLSにより、自分の行だけが返る）
+async function loadApps() {
+  const { data, error } = await sb.from(TABLE).select('*').order('created_at');
+  if (error) return show(error.message);
+  $('empty').classList.toggle('hidden', data.length > 0);
+  const ul = $('appList');
+  ul.innerHTML = '';
+  data.forEach((a) => {
+    const li = document.createElement('li');
+
+    // URLが http(s) のときだけリンクにする（javascript: などを防ぐ）
+    const isLink = /^https?:\/\//i.test(a.url || '');
+    const name = document.createElement(isLink ? 'a' : 'span');
+    if (isLink) { name.href = a.url; name.target = '_blank'; name.rel = 'noopener'; } else { name.className = 'nolink'; }
+    name.textContent = a.name; // textContent を使い、入力文字をそのままHTMLとして扱わない
+    li.append(name);
+
+    if (a.description) {
+      const d = document.createElement('div');
+      d.className = 'desc';
+      d.textContent = a.description;
+      li.append(d);
+    }
+    const host = document.createElement('div');
+    host.className = 'host';
+    host.textContent = isLink ? hostOf(a.url) : 'URL未設定';
+    li.append(host);
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const edit = document.createElement('button');
+    edit.textContent = '編集';
+    edit.onclick = () => setFormMode(a);
+    const del = document.createElement('button');
+    del.textContent = '削除';
+    del.className = 'danger';
+    del.onclick = async () => {
+      // 一覧から外すだけで、アプリ本体は消えない
+      if (!confirm(`「${a.name}」を一覧から削除します。よろしいですか？`)) return;
+      const { error } = await sb.from(TABLE).delete().eq('id', a.id);
+      if (error) show(error.message);
+      else { if (editingId === a.id) setFormMode(null); loadApps(); }
+    };
+    actions.append(edit, del);
+    li.append(actions);
+    ul.append(li);
+  });
+}
+
+// ログイン状態に応じて画面を切り替える
+let channel = null; // 他端末の変更を受け取るリアルタイム購読
+sb.auth.onAuthStateChange((_event, session) => {
+  const loggedIn = !!session;
+  $('loginView').classList.toggle('hidden', loggedIn);
+  $('mainView').classList.toggle('hidden', !loggedIn);
+  if (channel) { sb.removeChannel(channel); channel = null; } // 二重に購読しない
+  if (loggedIn) {
+    $('userLabel').textContent = session.user.email;
+    loadApps();
+    // テーブルに追加・更新・削除があったら、一覧を読み込み直す
+    channel = sb.channel('review-apps-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLE }, loadApps)
+      .subscribe();
+  }
+});
+
+$('loginBtn').onclick = async () => {
+  show('');
+  const { error } = await sb.auth.signInWithPassword({ email: $('email').value, password: $('password').value });
+  if (error) show(error.message);
+};
+$('signupBtn').onclick = async () => {
+  show('');
+  const { error } = await sb.auth.signUp({ email: $('email').value, password: $('password').value });
+  if (error) show(error.message);
+  else show('登録しました。確認メールが届いた場合は、リンクを開いてからログインしてください。');
+};
+$('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('loginBtn').click(); });
+$('logoutBtn').onclick = () => sb.auth.signOut();
+$('cancelEditBtn').onclick = () => setFormMode(null);
+
+// 追加・編集の保存（user_id はDB側で自動的にログイン中の人になる）
+$('addForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  show('');
+  const name = $('appName').value.trim();
+  const url = $('appUrl').value.trim();
+  if (!name) return;
+  if (url && !/^https?:\/\//i.test(url)) return show('URLは http:// または https:// で始めてください。');
+  const row = { name, url: url || null, description: $('appDesc').value.trim() || null };
+  const { error } = editingId
+    ? await sb.from(TABLE).update(row).eq('id', editingId)
+    : await sb.from(TABLE).insert(row);
+  if (error) return show(error.code === '23505' ? '同じ名前のアプリが既にあります。' : error.message);
+  setFormMode(null);
+  loadApps();
+});
+</script>
+</body>
+</html>
