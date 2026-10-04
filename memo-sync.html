@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>同期メモ（復習）</title>
+<style>
+  body { font-family: system-ui, "Yu Gothic UI", sans-serif; max-width: 640px; margin: 0 auto; padding: 16px; line-height: 1.6; }
+  textarea, input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 8px; margin: 4px 0; }
+  textarea { height: 40vh; }
+  button { font-size: 15px; padding: 8px 14px; margin: 4px 4px 4px 0; cursor: pointer; }
+  .hidden { display: none; }
+  #status { color: #666; font-size: 14px; min-height: 1.5em; }
+</style>
+</head>
+<body>
+<h1>同期メモ（復習）</h1>
+<p>端末に保存し、ログイン中はクラウドにも同期するだけの、最小のアプリです。</p>
+
+<textarea id="memo" placeholder="ここに書くと、自動で保存されます"></textarea>
+<p id="status"></p>
+
+<!-- 同期の操作（ログイン・今すぐ同期・ログアウト） -->
+<section id="loginView">
+  <input id="email" type="email" placeholder="メールアドレス" autocomplete="username">
+  <input id="password" type="password" placeholder="パスワード" autocomplete="current-password">
+  <button id="loginBtn">ログインして同期</button>
+</section>
+<section id="syncView" class="hidden">
+  <span id="userLabel"></span>
+  <button id="syncBtn">今すぐ同期</button>
+  <button id="logoutBtn">ログアウト</button>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = 'https://kcadsiwjxlmhzremgzet.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtjYWRzaXdqeGxtaHpyZW1nemV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4ODgzNzAsImV4cCI6MjEwNTQ2NDM3MH0.ZOm5zNFazsLKFl8N-oLhBeUxZcYscPNdOpYPOwq8d9M';
+const TABLE = 'review_app_kv';
+const APP_NAME = '同期メモ';
+const KEY = 'data-v1';
+const LOCAL_KEY = 'review-memo-data';    // 端末に保存するメモ本体
+const BACKUP_KEY = 'review-memo-backup'; // 競合時に選ばなかった側を1世代だけ退避
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const $ = (id) => document.getElementById(id);
+const setStatus = (t) => { $('status').textContent = t; };
+
+// 文字列の簡易ハッシュ。「前回の同期から変わったか」を比べるために使う
+const hashStr = (s) => { let h = 5381; for (const c of s) h = ((h << 5) + h + c.charCodeAt(0)) | 0; return String(h); };
+// 最後に同期した状態 {hash, at}（at はサーバーの更新日時）を端末に覚えておく
+const getMeta =() => { try { return JSON.parse(localStorage.getItem(LOCAL_KEY + '-meta') || 'null') || { hash: null, at: null }; } catch { return { hash: null, at: null }; } };
+const setMeta = (m) => localStorage.setItem(LOCAL_KEY + '-meta', JSON.stringify(m));
+const getLocal = () => localStorage.getItem(LOCAL_KEY) || '';
+
+let user = null;
+let timer = null;
+let syncing = false;
+
+// ---- 端末への保存 ----
+$('memo').value = getLocal();
+$('memo').addEventListener('input', () => {
+  localStorage.setItem(LOCAL_KEY, $('memo').value);
+  clearTimeout(timer);
+  if (user) timer = setTimeout(sync, 5000); // 入力が止まって5秒後にクラウドへ
+});
+
+// ---- 同期の本体 ----
+async function sync() {
+  if (!user || syncing) return;
+  syncing = true;
+  try {
+    const local = getLocal();
+    const localHash = hashStr(local);
+    const meta = getMeta();
+    const { data: remote, error } = await sb.from(TABLE).select('value, updated_at')
+      .eq('app_name', APP_NAME).eq('key', KEY).maybeSingle();
+    if (error) throw error;
+
+    // ① クラウドが空: 端末にデータがあるときだけ送る（空の端末でクラウドを消さない）
+    if (!remote) {
+      if (local) await insertRemote(local, localHash);
+      return setStatus('同期しました');
+    }
+    // ② クラウドは前回から変わっていない: 端末だけ変わっていれば送る
+    if (remote.updated_at === meta.at) {
+      if (localHash !== meta.hash) await updateRemote(local, localHash, meta.at);
+      return setStatus('同期しました');
+    }
+    // ③ クラウドが変わっている
+    const remoteHash = hashStr(remote.value);
+    if (remoteHash === localHash) { setMeta({ hash: localHash, at: remote.updated_at }); return setStatus('同期しました'); }
+    if (!local || localHash === meta.hash) {
+      applyRemote(remote); // 端末は変わっていない（または空）→ クラウドを反映
+      return setStatus('クラウドの内容を反映しました');
+    }
+    // ④ 両方変わっている（競合）: どちらを使うか選んでもらう。選ばなかった側は退避する
+    if (confirm('この端末とクラウドの両方が変更されています。\nOK＝クラウドの内容を使う / キャンセル＝この端末の内容を使う')) {
+      localStorage.setItem(BACKUP_KEY, local);
+      applyRemote(remote);
+      setStatus('クラウドの内容を使いました（元の内容は退避済み）');
+    } else {
+      localStorage.setItem(BACKUP_KEY, remote.value);
+      await updateRemote(local, localHash, remote.updated_at);
+      setStatus('この端末の内容を使いました（クラウド側は退避済み）');
+    }
+  } catch (e) {
+    setStatus('同期エラー: ' + (e.message || e));
+  } finally {
+    syncing = false;
+  }
+}
+
+function applyRemote(remote) {
+  localStorage.setItem(LOCAL_KEY, remote.value);
+  $('memo').value = remote.value;
+  setMeta({ hash: hashStr(remote.value), at: remote.updated_at });
+}
+
+async function insertRemote(local, localHash) {
+  const { data, error } = await sb.from(TABLE).insert({ app_name: APP_NAME, key: KEY, value: local }).select('updated_at');
+  if (error) throw error;
+  setMeta({ hash: localHash, at: data[0].updated_at });
+}
+
+// 「前回読んだ更新日時と同じ行」だけを更新する(compare-and-set)。0行なら他の端末が先に更新している
+async function updateRemote(local, localHash, expectedAt) {
+  const { data, error } = await sb.from(TABLE).update({ value: local })
+    .eq('app_name', APP_NAME).eq('key', KEY).eq('updated_at', expectedAt).select('updated_at');
+  if (error) throw error;
+  if (!data.length) { syncing = false; return sync(); } // 先に更新されていた → 読み直して判断
+  setMeta({ hash: localHash, at: data[0].updated_at });
+}
+
+// ---- ログイン ----
+sb.auth.onAuthStateChange((_e, session) => {
+  user = session ? session.user : null;
+  $('loginView').classList.toggle('hidden', !!user);
+  $('syncView').classList.toggle('hidden', !user);
+  if (user) { $('userLabel').textContent = user.email; sync(); }
+});
+$('loginBtn').onclick = async () => {
+  const { error } = await sb.auth.signInWithPassword({ email: $('email').value, password: $('password').value });
+  if (error) setStatus(error.message);
+};
+$('logoutBtn').onclick = () => sb.auth.signOut();
+$('syncBtn').onclick = sync;
+
+// 画面に戻ったとき・ネットに再接続したときにも同期する
+document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+window.addEventListener('online', sync);
+</script>
+</body>
+</html>
